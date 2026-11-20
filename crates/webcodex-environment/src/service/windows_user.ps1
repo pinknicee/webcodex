@@ -31,24 +31,32 @@ try {
     }
     # Task Scheduler may return an account name even when registration used a SID.
     function Account-Sid($identity) {
-        $resolved = Resolve-AccountSid $identity
-        if ($null -ne $resolved -and $resolved.Value -ceq $inputData.sid) { return $resolved.Value }
-        $computer = [Environment]::MachineName
-        # Only the bare local computer/user collision permits another lookup.
-        # Qualified names, UPNs and SID literals never change authority here.
-        if ([string]::IsNullOrWhiteSpace($identity) -or $identity -match '[\\/@]' -or $identity -match '^S-1-' -or
-            ![string]::Equals($identity, $computer, [StringComparison]::OrdinalIgnoreCase)) {
-            if ($null -ne $resolved) { return $resolved.Value }
+        if ([string]::IsNullOrWhiteSpace($identity)) {
             return $null
         }
-        $local = Resolve-AccountSid ($computer + '\' + $identity)
-        if ($null -eq $local -or $local.Value -cne $inputData.sid) { return $null }
-        # The bare name can identify the local SAM domain instead of its user
-        # (NTAccount.Translate may reject that domain SID). Never override a
-        # successfully resolved different user, group or foreign domain.
-        if ($null -ne $resolved -and
-            ($null -eq $local.AccountDomainSid -or $resolved.Value -cne $local.AccountDomainSid.Value)) { return $null }
-        return $local.Value
+
+        $candidates = @([string]$identity)
+
+        # Task Scheduler may omit the computer/domain prefix.
+        if ($identity -notmatch '[\\@]' -and $identity -notmatch '^S-1-') {
+            $candidates += "$env:USERDOMAIN\$identity"
+        }
+
+        foreach ($candidate in $candidates) {
+            try {
+                if ($candidate -match '^S-1-') {
+                    return ([Security.Principal.SecurityIdentifier]::new($candidate)).Value
+                }
+
+                return ([Security.Principal.NTAccount]::new($candidate)).Translate(
+                    [Security.Principal.SecurityIdentifier]
+                ).Value
+            } catch {
+                continue
+            }
+        }
+
+        return $null
     }
     function Owned-Task($task) {
         if ($null -eq $task) { return $false }
